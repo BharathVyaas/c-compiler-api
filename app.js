@@ -1,78 +1,53 @@
 const express = require("express");
-const { exec } = require("child_process");
-const cors = require("cors");
+const { spawn } = require("child_process");
 const bodyParser = require("body-parser");
-const { writeFile, unlink } = require("fs").promises; // Import unlink function
-const { v4: uuidv4 } = require("uuid");
 
 const app = express();
-app.use(cors());
+
+// Middleware to parse JSON body
 app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: false }));
 
-app.post("/", async (req, res) => {
-  const code = req.body.code;
-  const args = req.body.Parameters.join(" ");
-
-  const fileName = uuidv4(); // Remove await, as uuidv4 does not return a promise
-
-  if (code.includes("#include <stdlib.h>") || code.includes("system(")) {
-    return res.status(301).send({
-      responseCode: 301,
-      output: null,
-      errorMessage: "Couldn't compile code.",
-    });
-  }
-
+// Endpoint to receive code from the frontend
+app.post("/execute", (req, res) => {
   try {
-    await writeFile(`./${fileName}.c`, code); // Use await to ensure file is written before proceeding
+    const code = req.body.code;
+    const args = req.body.args;
 
-    exec(
-      `gcc ./${fileName}.c -o ./${fileName}`,
-      async (compileError, compileStdout, compileStderr) => {
-        if (compileError) {
-          console.error("Compilation error:", compileStderr);
-          await unlink(`./${fileName}.c`); // Delete the C file if compilation fails
-          return res.status(500).send({
-            responseCode: 301,
-            output: null,
-            errorMessage: compileStderr,
-          });
-        }
-
-        exec(
-          `./${fileName} ${args}`,
-          async (runError, runStdout, runStderr) => {
-            await unlink(`./${fileName}.c`); // Delete the C file after execution
-            await unlink(`./${fileName}`); // Delete the executable file after execution
-
-            if (runError) {
-              console.error("Execution error:", runStderr);
-              return res.status(500).send({
-                responseCode: 301,
-                output: null,
-                errorMessage: runStderr,
-              });
-            }
-
-            console.log("Execution successful:", runStdout);
-            res.status(200).send({
-              responseCode: 201,
-              output: runStdout,
-              errorMessage: null,
-            });
-          }
-        );
+    // Spawn a Docker run process and pass code as input
+    const dockerRun = spawn(
+      "docker",
+      ["run", "--rm", "-i", "bharathvyaas/compiler"],
+      {
+        stdio: "pipe",
       }
     );
-  } catch (error) {
-    console.error("Error writing file:", error);
-    res.status(500).send({
-      responseCode: 301,
-      output: null,
-      errorMessage: error.toString(),
+
+    // Write the code to the stdin of the Docker run process
+    dockerRun.stdin.write(JSON.stringify({ code, args: args.join(" ") }));
+    dockerRun.stdin.end(); // End the input stream
+
+    // Capture output from the Docker run process
+    let output = "";
+    dockerRun.stdout.on("data", (data) => {
+      output += data.toString();
     });
+
+    dockerRun.stderr.on("data", (data) => {
+      console.error(`Error: ${data}`);
+    });
+
+    dockerRun.on("close", (code) => {
+      console.log(`Child process exited with code ${code}`);
+      res.send({ output });
+    });
+  } catch (error) {
+    console.error("Error:", error);
+    res.status(500).send("Internal Server Error");
   }
 });
 
-app.listen(8080, () => console.log("Server is running on port 8080"));
+// Start the API server
+const PORT = process.env.PORT || 4001;
+app.listen(PORT, () => {
+  console.log(`Server is running on port ${PORT}`);
+});

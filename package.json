@@ -10,10 +10,11 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "async-mutex": "^0.5.0",
+    "axios": "^1.6.8",
     "body-parser": "^1.20.2",
+    "chalk": "^5.3.0",
     "cors": "^2.8.5",
-    "datastructures-js": "^13.0.0",
+    "dockerode": "^4.0.2",
     "express": "^4.19.2",
     "uuid": "^9.0.1"
   }
