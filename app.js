@@ -1,53 +1,62 @@
 const express = require("express");
-const { spawn } = require("child_process");
+const { exec, spawn } = require("child_process");
+const cors = require("cors");
 const bodyParser = require("body-parser");
+const { writeFile, unlink } = require("fs").promises;
+const { v4: uuidv4 } = require("uuid");
 
 const app = express();
-
-// Middleware to parse JSON body
+app.use(cors());
 app.use(bodyParser.json());
+app.use(bodyParser.urlencoded({ extended: false }));
 
-// Endpoint to receive code from the frontend
-app.post("/execute", (req, res) => {
-  try {
-    const code = req.body.code;
-    const args = req.body.args;
+app.post("/", async (req, res) => {
+  const code = req.body.code;
+  const inputs = req.body.Parameters;
 
-    // Spawn a Docker run process and pass code as input
-    const dockerRun = spawn(
-      "docker",
-      ["run", "--rm", "-i", "bharathvyaas/compiler"],
-      {
-        stdio: "pipe",
+  const fileName = uuidv4();
+
+  await writeFile(`./${fileName}.c`, code);
+
+  exec(
+    `gcc ./${fileName}.c -o ./${fileName}`,
+    async (error, stdout, stderr) => {
+      await unlink(`./${fileName}.c`);
+
+      if (error || stderr) {
+        return res.status(200).send({
+          responseCode: 301,
+          output: null,
+          errorMessage: error || stderr,
+        });
       }
-    );
 
-    // Write the code to the stdin of the Docker run process
-    dockerRun.stdin.write(JSON.stringify({ code, args: args.join(" ") }));
-    dockerRun.stdin.end(); // End the input stream
+      const childProcess = exec(
+        `${fileName}.exe`,
+        async (error, stdout, stderr) => {
+          await unlink(`./${fileName}.exe`);
 
-    // Capture output from the Docker run process
-    let output = "";
-    dockerRun.stdout.on("data", (data) => {
-      output += data.toString();
-    });
+          if (error || stderr) {
+            return res.status(200).send({
+              responseCode: 301,
+              output: null,
+              errorMessage: error || stderr,
+            });
+          }
 
-    dockerRun.stderr.on("data", (data) => {
-      console.error(`Error: ${data}`);
-    });
+          res.status(200).send({
+            responseCode: 201,
+            output: stdout,
+            errorMessage: null,
+          });
+        }
+      );
 
-    dockerRun.on("close", (code) => {
-      console.log(`Child process exited with code ${code}`);
-      res.send({ output });
-    });
-  } catch (error) {
-    console.error("Error:", error);
-    res.status(500).send("Internal Server Error");
-  }
+      inputs.forEach((input) => childProcess.stdin.write(`${input}\n`));
+
+      childProcess.stdin.end();
+    }
+  );
 });
 
-// Start the API server
-const PORT = process.env.PORT || 4001;
-app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
-});
+app.listen(8080, () => console.log("Server is running on port 8080"));

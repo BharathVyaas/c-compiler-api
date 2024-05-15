@@ -5,7 +5,7 @@ process.stdin.setEncoding("utf8");
 
 let code = "";
 let fileName = "main";
-let args = "";
+let inputs = [];
 let rawData = "";
 
 process.stdin.on("data", (chunk) => {
@@ -16,7 +16,7 @@ process.stdin.on("end", () => {
   const parsedData = JSON.parse(rawData);
 
   code = parsedData.code.trim();
-  args = parsedData.args.trim();
+  inputs = parsedData.input;
 
   processCode(code, (data) => {
     console.log(data);
@@ -31,7 +31,6 @@ async function processCode(code, callback) {
       `gcc ./${fileName}.c -o ./${fileName}`,
       async (compileError, compileStdout, compileStderr) => {
         if (compileError) {
-          console.error("Compilation error:", compileStderr);
           await cleanup();
           callback({
             responseCode: 301,
@@ -41,8 +40,8 @@ async function processCode(code, callback) {
           return;
         }
 
-        exec(
-          `./${fileName} ${args}`,
+        const childProcess = exec(
+          `./${fileName}`,
           async (runError, runStdout, runStderr) => {
             await cleanup();
             if (runError) {
@@ -54,13 +53,24 @@ async function processCode(code, callback) {
               return;
             }
 
-            callback({
-              responseCode: 201,
-              output: runStdout,
-              errorMessage: null,
-            });
+            if (runStdout)
+              callback({
+                responseCode: 201,
+                output: runStdout,
+                errorMessage: null,
+              });
           }
         );
+
+        inputs.forEach((input) => childProcess.stdin.write(`${input}\n`));
+
+        childProcess.stdin.on("error", (error) => {
+          if (error.code !== "EPIPE") {
+            console.error("Error writing input to child process:", error);
+          }
+        });
+
+        childProcess.stdin.end();
       }
     );
   } catch (error) {
