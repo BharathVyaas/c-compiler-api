@@ -1,62 +1,102 @@
 const express = require("express");
-const { exec, spawn } = require("child_process");
-const cors = require("cors");
+const { spawn } = require("child_process");
 const bodyParser = require("body-parser");
-const { writeFile, unlink } = require("fs").promises;
-const { v4: uuidv4 } = require("uuid");
 
 const app = express();
-app.use(cors());
+
 app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: false }));
 
-app.post("/", async (req, res) => {
-  const code = req.body.code;
-  const inputs = req.body.Parameters;
+app.post("/", (req, res) => {
+  try {
+    const code = req.body.code;
+    const args = req.body.args;
 
-  const fileName = uuidv4();
+    // Spawn a Docker run process and pass code as input
+    const dockerRun = spawn(
+      "docker",
+      ["run", "--rm", "-i", "bharathvyaas/compiler"],
+      {
+        stdio: "pipe",
+      }
+    );
 
-  await writeFile(`./${fileName}.c`, code);
+    // Write the code to the stdin of the Docker run process
+    dockerRun.stdin.write(JSON.stringify({ code, input: args }));
+    dockerRun.stdin.end(); // End the input stream
 
-  exec(
-    `gcc ./${fileName}.c -o ./${fileName}`,
-    async (error, stdout, stderr) => {
-      await unlink(`./${fileName}.c`);
+    // Capture output from the Docker run process
+    let output = "";
+    let errorOccurred = false;
+    let errorMessage = "";
 
-      if (error || stderr) {
-        return res.status(200).send({
+    dockerRun.stdout.on("data", (data) => {
+      output += data.toString();
+      if (output.length > 1e6) {
+        // 1MB limit
+        dockerRun.kill();
+        errorOccurred = true;
+        errorMessage = {
           responseCode: 301,
           output: null,
-          errorMessage: error || stderr,
+          errorMessage: {
+            error: "Output Limit Exceeded",
+            message: "The output is too large.",
+          },
+        };
+      }
+    });
+
+    dockerRun.stderr.on("data", (data) => {
+      console.error(`Error: ${data}`);
+      errorOccurred = true;
+      if (data.includes("RangeError")) {
+        errorMessage = {
+          responseCode: 301,
+          output: null,
+          errorMessage: {
+            error: "Range Error",
+            message: "Program taking too much memory.",
+          },
+        };
+      } else {
+        errorMessage = {
+          responseCode: 301,
+          output: null,
+          errorMessage: {
+            error: "Error Executing",
+            message: "Something went wrong while executing the code.",
+          },
+        };
+      }
+    });
+
+    dockerRun.on("close", (code) => {
+      console.log(`Child process exited with code ${code}`);
+      if (errorOccurred) {
+        res.status(200).send(errorMessage);
+      } else {
+        res.send({
+          responseCode: 200,
+          output: output,
+          errorMessage: null,
         });
       }
-
-      const childProcess = exec(
-        `${fileName}.exe`,
-        async (error, stdout, stderr) => {
-          await unlink(`./${fileName}.exe`);
-
-          if (error || stderr) {
-            return res.status(200).send({
-              responseCode: 301,
-              output: null,
-              errorMessage: error || stderr,
-            });
-          }
-
-          res.status(200).send({
-            responseCode: 201,
-            output: stdout,
-            errorMessage: null,
-          });
-        }
-      );
-
-      inputs.forEach((input) => childProcess.stdin.write(`${input}\n`));
-
-      childProcess.stdin.end();
-    }
-  );
+    });
+  } catch (error) {
+    console.error("Error:", error);
+    res.status(500).send({
+      responseCode: 500,
+      output: null,
+      errorMessage: {
+        error: "Internal Server Error",
+        message: error.message,
+      },
+    });
+  }
 });
 
-app.listen(8080, () => console.log("Server is running on port 8080"));
+// Start the API server
+const PORT = process.env.PORT || 4001;
+app.listen(PORT, () => {
+  console.log(`Server is running on port ${PORT}`);
+});

@@ -1,5 +1,5 @@
 const { writeFile, unlink } = require("fs").promises;
-const { exec } = require("child_process");
+const { spawn } = require("child_process");
 
 process.stdin.setEncoding("utf8");
 
@@ -18,63 +18,118 @@ process.stdin.on("end", () => {
   code = parsedData.code.trim();
   inputs = parsedData.input;
 
-  processCode(code, (data) => {
+  processCode(code, inputs, (data) => {
     console.log(data);
   });
 });
 
-async function processCode(code, callback) {
+async function processCode(code, inputs, callback) {
   try {
     await writeFile(`./${fileName}.c`, code);
 
-    exec(
-      `gcc ./${fileName}.c -o ./${fileName}`,
-      async (compileError, compileStdout, compileStderr) => {
-        if (compileError) {
-          await cleanup();
+    const compileProcess = spawn("gcc", [
+      `./${fileName}.c`,
+      "-o",
+      `./${fileName}`,
+    ]);
+
+    compileProcess.on("error", (error) => {
+      console.error("Compilation error:", error);
+      callback({
+        responseCode: 301,
+        output: null,
+        errorMessage: error.toString(),
+      });
+    });
+
+    compileProcess.on("close", async (code) => {
+      if (code !== 0) {
+        console.error("Compilation failed with code:", code);
+        await cleanup();
+        callback({
+          responseCode: 301,
+          output: null,
+          errorMessage: `Compilation failed with code ${code}`,
+        });
+        return;
+      }
+
+      const childProcess = spawn(`./${fileName}`);
+      let output = "";
+      let errorOccurred = false;
+
+      const timeout = setTimeout(() => {
+        childProcess.kill();
+        errorOccurred = true;
+        callback({
+          responseCode: 301,
+          output: null,
+          errorMessage: {
+            error: "Timeout Error",
+            message: "Execution timed out.",
+          },
+        });
+      }, 10000); // 10 seconds timeout
+
+      childProcess.on("error", (error) => {
+        console.error("Execution error:", error);
+        clearTimeout(timeout);
+        callback({
+          responseCode: 301,
+          output: null,
+          errorMessage: error.toString(),
+        });
+      });
+
+      childProcess.stdout.on("data", (data) => {
+        output += data.toString();
+        if (output.length > 1e6) {
+          // 1MB limit
+          clearTimeout(timeout);
+          childProcess.kill();
+          errorOccurred = true;
           callback({
             responseCode: 301,
             output: null,
-            errorMessage: compileStderr,
+            errorMessage: {
+              error: "Output Limit Exceeded",
+              message: "The output is too large.",
+            },
           });
-          return;
         }
+      });
 
-        const childProcess = exec(
-          `./${fileName}`,
-          async (runError, runStdout, runStderr) => {
-            await cleanup();
-            if (runError) {
-              callback({
-                responseCode: 301,
-                output: null,
-                errorMessage: runStderr,
-              });
-              return;
-            }
-
-            if (runStdout)
-              callback({
-                responseCode: 201,
-                output: runStdout,
-                errorMessage: null,
-              });
-          }
-        );
-
-        inputs.forEach((input) => childProcess.stdin.write(`${input}\n`));
-
-        childProcess.stdin.on("error", (error) => {
-          if (error.code !== "EPIPE") {
-            console.error("Error writing input to child process:", error);
-          }
+      childProcess.stderr.on("data", (data) => {
+        console.error(`Execution error: ${data}`);
+        clearTimeout(timeout);
+        errorOccurred = true;
+        callback({
+          responseCode: 301,
+          output: null,
+          errorMessage: data.toString(),
         });
+      });
 
-        childProcess.stdin.end();
-      }
-    );
+      childProcess.on("close", async () => {
+        clearTimeout(timeout);
+        if (!errorOccurred) {
+          await cleanup();
+          callback({
+            responseCode: 201,
+            output: output.trim(),
+            errorMessage: null,
+          });
+        }
+      });
+
+      inputs.forEach((input) => {
+        childProcess.stdin.write(`${input}\n`);
+      });
+
+      childProcess.stdin.end();
+    });
   } catch (error) {
-    console.error("Error writing file:", error);
+    console.error("Error processing code:", error);
     callback({
       responseCode: 301,
       output: null,
