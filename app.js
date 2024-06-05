@@ -1,10 +1,12 @@
 const express = require("express");
+const cors = require("cors");
 const { spawn } = require("child_process");
 const bodyParser = require("body-parser");
 
 const app = express();
 
 app.use(bodyParser.json());
+app.use(cors());
 
 app.post("/", (req, res) => {
   try {
@@ -96,7 +98,7 @@ app.post("/", (req, res) => {
 });
 
 // Start the API server
-const PORT = process.env.PORT || 4001;
+const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
 });
